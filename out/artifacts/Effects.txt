@@ -1,0 +1,25 @@
+# Effects that can be used for TrailEffect
+#effect 0:campfire
+effect 1:lightning
+effect 2:White Light beam
+effect 3:black light beam
+effect 4:xmas lights beam
+effect 5:green fireworks
+effect 6:orange firework
+effect 7:red firework
+effect 8:yellow firework
+effect 9:multi color firework?
+effect 19:large plume of sparkles
+effect 20:turned night and lightning storm
+effect 21:blood rain?
+effect 25:Red Light beam
+effect 26:dust plume on ground
+
+# Effects that can be used for trailParticleName
+effect 27:large black smoke cloud
+effect 27 rift01:large black smoke cloud
+effect 27 rift02:medium black smoke cloud
+effect 27 treasureP: treasure chest particles (Gold Sparkles)
+effect 27 reindeer: similar to treasure chest but colored sparkles
+effect 27 iceBall_1_1: blue glowing ball
+effect 27 acidBall_1_1: green glowing ball
