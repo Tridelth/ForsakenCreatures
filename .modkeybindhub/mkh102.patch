@@ -1,0 +1,139 @@
+--- ModKeybindHub_1.0.1.cs	2026-09-16 13:11:37.740666583 +0000
++++ ModKeybindHub_1.0.2.cs	2026-09-16 13:23:59.861351223 +0000
+@@ -13,11 +13,11 @@
+ 
+ namespace ModKeybindHub
+ {
+-    [BepInPlugin("local.modkeybindhub", "Mod Keybind Hub", "1.0.1")]
++    [BepInPlugin("local.modkeybindhub", "Mod Keybind Hub", "1.0.2")]
+     public sealed class ModKeybindHubPlugin : BaseUnityPlugin
+     {
+         private const string PluginGuid = "local.modkeybindhub";
+-        private const string PluginVersion = "1.0.1";
++        private const string PluginVersion = "1.0.2";
+ 
+         private ConfigEntry<KeyboardShortcut> _fallbackOpenKey;
+         private ConfigEntry<bool> _scanStringCandidates;
+@@ -73,7 +73,7 @@
+             _scanRawFields = Config.Bind<bool>("Detection", "ScanRawKeyFields", true,
+                 "Detect writable static/plugin KeyCode and KeyboardShortcut fields used by mods that did not expose a BepInEx config entry.");
+             _scanFileOnlyCandidates = Config.Bind<bool>("Detection", "ShowFileOnlyCandidates", true,
+-                "Show keybind-looking entries found only in BepInEx .cfg files. They are reported as read-only because changing them may require a restart or a mod-specific reload.");
++                "Show keybind-looking entries found only in config files belonging to mods that are currently loaded. Old/stale config files from uninstalled mods are ignored.");
+             _showVanillaCollisions = Config.Bind<bool>("Detection", "ShowVanillaCollisions", true,
+                 "Check detected mod binds against currently registered Valheim keyboard/mouse ZInput actions when available.");
+             _debugLogging = Config.Bind<bool>("General", "DebugLogging", false,
+@@ -1047,8 +1047,75 @@
+ 
+         private void ScanFileOnlyCandidates()
+         {
+-            string configRoot = Paths.ConfigPath;
+-            if (string.IsNullOrEmpty(configRoot) || !Directory.Exists(configRoot))
++            // Only inspect config files that belong to plugins which are actually loaded now.
++            // BepInEx intentionally leaves old .cfg files behind after a mod is removed; scanning
++            // the whole config directory makes those stale files look like active keybinds.
++            HashSet<string> activeConfigFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++
++            try
++            {
++                foreach (KeyValuePair<string, PluginInfo> kv in Chainloader.PluginInfos)
++                {
++                    PluginInfo info = kv.Value;
++                    if (info == null || info.Instance == null)
++                    {
++                        continue;
++                    }
++
++                    try
++                    {
++                        ConfigFile config = info.Instance.Config;
++                        if (config != null && !string.IsNullOrEmpty(config.ConfigFilePath) && File.Exists(config.ConfigFilePath))
++                        {
++                            activeConfigFiles.Add(Path.GetFullPath(config.ConfigFilePath));
++                        }
++                    }
++                    catch
++                    {
++                    }
++
++                    // Normal BepInEx convention is <plugin GUID>.cfg. Keep this as a safe fallback
++                    // in case a plugin's Config property is unusual but its normal file exists.
++                    try
++                    {
++                        string guid = SafeMetadataGuid(info);
++                        if (!string.IsNullOrEmpty(guid))
++                        {
++                            string defaultPath = Path.Combine(Paths.ConfigPath, guid + ".cfg");
++                            if (File.Exists(defaultPath))
++                            {
++                                activeConfigFiles.Add(Path.GetFullPath(defaultPath));
++                            }
++                        }
++                    }
++                    catch
++                    {
++                    }
++                }
++            }
++            catch (Exception ex)
++            {
++                DebugLog("Active config ownership scan failed safely: " + ex.Message);
++            }
++
++            // Also include any extra ConfigFile instances we already discovered through live
++            // ConfigEntry objects. This covers mods that use more than one active config file.
++            for (int i = 0; i < _bindings.Count; i++)
++            {
++                BindingRecord binding = _bindings[i];
++                if (binding == null || binding.ConfigEntry == null)
++                {
++                    continue;
++                }
++
++                string path = SafeConfigPath(binding.ConfigEntry);
++                if (!string.IsNullOrEmpty(path) && File.Exists(path))
++                {
++                    try { activeConfigFiles.Add(Path.GetFullPath(path)); } catch { activeConfigFiles.Add(path); }
++                }
++            }
++
++            if (activeConfigFiles.Count == 0)
+             {
+                 return;
+             }
+@@ -1068,19 +1135,13 @@
+                 }
+             }
+ 
+-            string[] files;
+-            try
+-            {
+-                files = Directory.GetFiles(configRoot, "*.cfg", SearchOption.AllDirectories);
+-            }
+-            catch
++            foreach (string file in activeConfigFiles)
+             {
+-                return;
+-            }
++                if (string.IsNullOrEmpty(file) || !File.Exists(file))
++                {
++                    continue;
++                }
+ 
+-            for (int f = 0; f < files.Length; f++)
+-            {
+-                string file = files[f];
+                 string section = string.Empty;
+                 string[] lines;
+                 try { lines = File.ReadAllLines(file); } catch { continue; }
+@@ -1138,8 +1199,8 @@
+                     record.ModName = FriendlyFileName(file);
+                     record.Section = section;
+                     record.ActionName = CleanActionName(keyName);
+-                    record.Description = "Detected in a BepInEx config file, but no live ConfigEntry was found. It is shown for conflict awareness only.";
+-                    record.SourceLabel = "CFG FILE ONLY • READ ONLY";
++                    record.Description = "Detected in the config file of a currently loaded mod, but no live ConfigEntry was found. It is shown for conflict awareness only.";
++                    record.SourceLabel = "ACTIVE CFG FILE • READ ONLY";
+                     record.Editable = false;
+                     record.Persistent = true;
+                     record.Id = id;
