@@ -26,7 +26,7 @@ jobs:
           echo '24695486bdfee9b2fe01c273c8eb79bafe2028645defc7ab869e740c567b2deb  .modkeybindhub/ModKeybindHub.cs' | sha256sum -c -
 
       - name: Restore
-        run: dotnet restore .modkeybindhub/ModKeybindHub.csproj
+        run: dotnet restore .modkeybindhub/ModKeybindHub.csproj --source https://nuget.bepinex.dev/v3/index.json --source https://api.nuget.org/v3/index.json
 
       - name: Build
         run: dotnet build .modkeybindhub/ModKeybindHub.csproj -c Release --no-restore
