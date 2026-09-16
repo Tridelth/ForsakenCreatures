@@ -1,0 +1,157 @@
+--- ModKeybindHub.cs
++++ ModKeybindHub.cs
+@@ -13,11 +13,11 @@
+ 
+ namespace ModKeybindHub
+ {
+-    [BepInPlugin("local.modkeybindhub", "Mod Keybind Hub", "1.0.0")]
++    [BepInPlugin("local.modkeybindhub", "Mod Keybind Hub", "1.0.1")]
+     public sealed class ModKeybindHubPlugin : BaseUnityPlugin
+     {
+         private const string PluginGuid = "local.modkeybindhub";
+-        private const string PluginVersion = "1.0.0";
++        private const string PluginVersion = "1.0.1";
+ 
+         private ConfigEntry<KeyboardShortcut> _fallbackOpenKey;
+         private ConfigEntry<bool> _scanStringCandidates;
+@@ -431,10 +431,10 @@
+             GameObject viewport = CreateUiObject("Viewport", scrollObj.transform);
+             RectTransform viewRect = viewport.GetComponent<RectTransform>();
+             Stretch(viewRect, 4f, 4f, 18f, 4f);
+-            Image viewportImage = viewport.AddComponent<Image>();
+-            viewportImage.color = new Color(1f, 1f, 1f, 0.001f);
+-            Mask mask = viewport.AddComponent<Mask>();
+-            mask.showMaskGraphic = false;
++            // RectMask2D is considerably more reliable than the old Graphic+Mask path on
++            // Valheim's current Unity 6 UI runtime.  In 1.0.0 the content was present and
++            // scrollable, but the legacy Mask/layout combination could cull every row.
++            viewport.AddComponent<RectMask2D>();
+ 
+             GameObject content = CreateUiObject("Content", viewport.transform);
+             _rowsContent = content.GetComponent<RectTransform>();
+@@ -442,20 +442,12 @@
+             _rowsContent.anchorMax = new Vector2(1f, 1f);
+             _rowsContent.pivot = new Vector2(0.5f, 1f);
+             _rowsContent.anchoredPosition = Vector2.zero;
+-            _rowsContent.sizeDelta = Vector2.zero;
+-
+-            VerticalLayoutGroup layout = content.AddComponent<VerticalLayoutGroup>();
+-            layout.childControlHeight = true;
+-            layout.childControlWidth = true;
+-            layout.childForceExpandHeight = false;
+-            layout.childForceExpandWidth = true;
+-            layout.spacing = 2f;
+-            layout.padding = new RectOffset(2, 2, 2, 2);
+-
+-            ContentSizeFitter fitter = content.AddComponent<ContentSizeFitter>();
+-            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+-            fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
++            _rowsContent.sizeDelta = new Vector2(0f, 4f);
+ 
++            // Rows are positioned explicitly rather than through VerticalLayoutGroup /
++            // ContentSizeFitter.  This avoids a Unity 6 layout regression where the
++            // ScrollRect knew the content height (and showed a scrollbar) while all row
++            // graphics ended up clipped to a zero/invalid layout rect.
+             scroll.viewport = viewRect;
+             scroll.content = _rowsContent;
+ 
+@@ -1384,20 +1376,39 @@
+                 shown++;
+             }
+ 
++            float contentHeight;
+             if (shown == 0)
+             {
++                contentHeight = 76f;
+                 Text none = CreateText(_rowsContent, "NoRows", _bindings.Count == 0 ? "No mod keybinds detected yet. Press RESCAN after your mods have loaded." : "No bindings match the current filter.", 17, TextAnchor.MiddleCenter);
+-                LayoutElement el = none.gameObject.AddComponent<LayoutElement>();
+-                el.preferredHeight = 70f;
++                RectTransform noneRect = none.rectTransform;
++                noneRect.anchorMin = new Vector2(0f, 1f);
++                noneRect.anchorMax = new Vector2(1f, 1f);
++                noneRect.pivot = new Vector2(0.5f, 1f);
++                noneRect.anchoredPosition = new Vector2(0f, -3f);
++                noneRect.sizeDelta = new Vector2(-8f, 70f);
+                 none.color = new Color(0.7f, 0.74f, 0.8f, 1f);
+             }
++            else
++            {
++                contentHeight = shown * 56f + 4f;
++            }
++
++            _rowsContent.sizeDelta = new Vector2(0f, contentHeight);
++            _rowsContent.anchoredPosition = Vector2.zero;
++            Canvas.ForceUpdateCanvases();
+         }
+ 
+         private void CreateBindingRow(BindingRecord record, int rowIndex)
+         {
+             GameObject row = CreateUiObject("Row_" + rowIndex, _rowsContent);
+-            LayoutElement layout = row.AddComponent<LayoutElement>();
+-            layout.preferredHeight = 54f;
++            RectTransform rowRect = row.GetComponent<RectTransform>();
++            rowRect.anchorMin = new Vector2(0f, 1f);
++            rowRect.anchorMax = new Vector2(1f, 1f);
++            rowRect.pivot = new Vector2(0.5f, 1f);
++            rowRect.anchoredPosition = new Vector2(0f, -(2f + rowIndex * 56f));
++            rowRect.sizeDelta = new Vector2(-4f, 54f);
++
+             Image bg = row.AddComponent<Image>();
+             if (record.Conflict == ConflictLevel.Exact)
+             {
+@@ -2169,18 +2180,48 @@
+                 return false;
+             }
+ 
+-            try
++            // Do not call KeyboardShortcut.Deserialize on arbitrary strings. BepInEx logs
++            // an error every time a non-key string is handed to it, which made innocent
++            // settings such as "NeverAffectHotkeyBar" and "0.03" spam the game log.
++            // Parse the simple BepInEx "MainKey + Modifier + ..." format ourselves.
++            if (trimmed.IndexOf('+') >= 0)
+             {
+-                KeyboardShortcut ks = KeyboardShortcut.Deserialize(trimmed);
+-                if (ks.MainKey != KeyCode.None)
++                string[] shortcutParts = trimmed.Split(new char[] { '+' }, StringSplitOptions.RemoveEmptyEntries);
++                KeyCode shortcutMain = KeyCode.None;
++                List<KeyCode> shortcutModifiers = new List<KeyCode>();
++                bool shortcutValid = shortcutParts.Length > 0;
++
++                for (int i = 0; i < shortcutParts.Length && shortcutValid; i++)
++                {
++                    KeyCode partKey;
++                    if (!TryParseKeyCode(shortcutParts[i].Trim(), out partKey))
++                    {
++                        shortcutValid = false;
++                        break;
++                    }
++
++                    if (IsModifier(partKey))
++                    {
++                        if (!shortcutModifiers.Contains(partKey)) shortcutModifiers.Add(partKey);
++                    }
++                    else if (shortcutMain == KeyCode.None)
++                    {
++                        shortcutMain = partKey;
++                    }
++                    else
++                    {
++                        shortcutValid = false;
++                    }
++                }
++
++                if (shortcutValid && shortcutMain != KeyCode.None)
+                 {
+-                    main = ks.MainKey;
+-                    modifiers = new List<KeyCode>(ks.Modifiers);
+-                    style = trimmed.IndexOf('+') >= 0 ? StringBindingStyle.BepInExShortcut : StringBindingStyle.SingleKey;
++                    main = shortcutMain;
++                    modifiers = shortcutModifiers;
++                    style = StringBindingStyle.BepInExShortcut;
+                     return true;
+                 }
+             }
+-            catch { }
+ 
+             if (trimmed.IndexOf(',') >= 0)
+             {
