@@ -1,4 +1,4 @@
-name: Build ModKeybindHub 1.0.1 DLL
+name: Build ModKeybindHub 1.0.2 DLL
 
 on:
   push:
@@ -28,6 +28,8 @@ jobs:
           python3 -c "p='.modkeybindhub/ModKeybindHub.cs'; s=open(p).read(); s=s.replace('foreach (ConfigEntryBase entry in config.Values)', 'foreach (ConfigEntryBase entry in config.GetConfigEntries())'); open(p,'w').write(s)"
           patch .modkeybindhub/ModKeybindHub.cs < .modkeybindhub/mkh101.patch
           echo 'c9f8f3df951c60179e59dc3e734b023d3ba915d84b9062a3481674785b66b8b1  .modkeybindhub/ModKeybindHub.cs' | sha256sum -c -
+          patch .modkeybindhub/ModKeybindHub.cs < .modkeybindhub/mkh102.patch
+          echo '861f0f3f30cae0afce26ad5f506951acdf80fda7d428ed4c99b77227befd2aad  .modkeybindhub/ModKeybindHub.cs' | sha256sum -c -
 
       - name: Restore
         run: dotnet restore .modkeybindhub/ModKeybindHub.csproj --source https://nuget.bepinex.dev/v3/index.json --source https://api.nuget.org/v3/index.json
@@ -45,7 +47,7 @@ jobs:
       - name: Upload DLL
         uses: actions/upload-artifact@v4
         with:
-          name: ModKeybindHub-1.0.1-DLL
+          name: ModKeybindHub-1.0.2-DLL
           path: .modkeybindhub/bin/Release/netstandard2.1/ModKeybindHub.dll
           if-no-files-found: error
           retention-days: 1
