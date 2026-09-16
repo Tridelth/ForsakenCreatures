@@ -1,0 +1,184 @@
+            // Prefer the exact set the active BepInEx input adapter says it can read.
+            try
+            {
+                if (_inputSystem != null && _inputSupportedKeyCodes != null)
+                {
+                    IEnumerable supported = _inputSupportedKeyCodes.GetValue(_inputSystem, null) as IEnumerable;
+                    if (supported != null)
+                    {
+                        foreach (object raw in supported)
+                        {
+                            if (!(raw is KeyCode))
+                            {
+                                continue;
+                            }
+                            KeyCode key = (KeyCode)raw;
+                            if (!_captureKeys.Contains(key) && IsKeyboardMouseKey(key))
+                            {
+                                _captureKeys.Add(key);
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                _captureKeys.Clear();
+            }
+
+            if (_captureKeys.Count > 0)
+            {
+                return;
+            }
+
+            // BepInEx KeyboardShortcut supplies a compatible key list on older builds.
+            try
+            {
+                foreach (KeyCode key in KeyboardShortcut.AllKeyCodes)
+                {
+                    if (!_captureKeys.Contains(key) && IsKeyboardMouseKey(key))
+                    {
+                        _captureKeys.Add(key);
+                    }
+                }
+            }
+            catch
+            {
+                Array values = Enum.GetValues(typeof(KeyCode));
+                foreach (object raw in values)
+                {
+                    KeyCode key = (KeyCode)raw;
+                    if (!_captureKeys.Contains(key) && IsKeyboardMouseKey(key))
+                    {
+                        _captureKeys.Add(key);
+                    }
+                }
+            }
+        }
+
+        private static bool IsKeyboardMouseKey(KeyCode key)
+        {
+            if (key == KeyCode.None)
+            {
+                return false;
+            }
+
+            string n = key.ToString();
+            if (n.StartsWith("Joystick", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private void BuildOverlayUi()
+        {
+            _font = FindUsableFont();
+
+            _canvasObject = new GameObject("ModKeybindHubCanvas", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+            DontDestroyOnLoad(_canvasObject);
+            _canvas = _canvasObject.GetComponent<Canvas>();
+            _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            _canvas.sortingOrder = 32000;
+
+            CanvasScaler scaler = _canvasObject.GetComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            scaler.matchWidthOrHeight = 0.5f;
+
+            _panelObject = CreateUiObject("Panel", _canvasObject.transform);
+            _panelRect = _panelObject.GetComponent<RectTransform>();
+            _panelRect.anchorMin = new Vector2(0.5f, 0.5f);
+            _panelRect.anchorMax = new Vector2(0.5f, 0.5f);
+            _panelRect.pivot = new Vector2(0.5f, 0.5f);
+            _panelRect.sizeDelta = new Vector2(1420f, 860f);
+            _panelRect.anchoredPosition = Vector2.zero;
+            Image panelImage = _panelObject.AddComponent<Image>();
+            panelImage.color = new Color(0.06f, 0.065f, 0.075f, 0.985f);
+
+            GameObject blocker = CreateUiObject("Blocker", _canvasObject.transform);
+            RectTransform blockerRect = blocker.GetComponent<RectTransform>();
+            Stretch(blockerRect, 0f, 0f, 0f, 0f);
+            blockerRect.SetAsFirstSibling();
+            Image blockerImage = blocker.AddComponent<Image>();
+            blockerImage.color = new Color(0f, 0f, 0f, 0.62f);
+            Button blockerButton = blocker.AddComponent<Button>();
+            blockerButton.transition = Selectable.Transition.None;
+            blockerButton.onClick.AddListener(ClosePanel);
+
+            Text title = CreateText(_panelObject.transform, "Title", "MOD KEYBINDS", 30, TextAnchor.MiddleLeft);
+            SetRect(title.rectTransform, new Vector2(24f, -18f), new Vector2(520f, 48f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f));
+            title.fontStyle = FontStyle.Bold;
+
+            Text subtitle = CreateText(_panelObject.transform, "Subtitle",
+                "Detected from loaded BepInEx mods. Red = exact collision, amber = possible overlap. Click a key to rebind; Delete/Backspace clears; Esc cancels.",
+                15, TextAnchor.MiddleLeft);
+            SetRect(subtitle.rectTransform, new Vector2(24f, -62f), new Vector2(1000f, 34f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f));
+            subtitle.color = new Color(0.78f, 0.82f, 0.88f, 1f);
+
+            Button close = CreateButton(_panelObject.transform, "Close", "CLOSE", new Vector2(120f, 40f));
+            RectTransform closeRect = close.GetComponent<RectTransform>();
+            closeRect.anchorMin = new Vector2(1f, 1f);
+            closeRect.anchorMax = new Vector2(1f, 1f);
+            closeRect.pivot = new Vector2(1f, 1f);
+            closeRect.anchoredPosition = new Vector2(-18f, -18f);
+            close.onClick.AddListener(ClosePanel);
+
+            Button rescan = CreateButton(_panelObject.transform, "Rescan", "RESCAN", new Vector2(125f, 40f));
+            RectTransform rescanRect = rescan.GetComponent<RectTransform>();
+            rescanRect.anchorMin = new Vector2(1f, 1f);
+            rescanRect.anchorMax = new Vector2(1f, 1f);
+            rescanRect.pivot = new Vector2(1f, 1f);
+            rescanRect.anchoredPosition = new Vector2(-154f, -18f);
+            rescan.onClick.AddListener(delegate { ScanAllBindings(true); });
+
+            _searchField = CreateInputField(_panelObject.transform, "SearchField", "Search mod, action, section or key...");
+            RectTransform searchRect = _searchField.GetComponent<RectTransform>();
+            searchRect.anchorMin = new Vector2(0f, 1f);
+            searchRect.anchorMax = new Vector2(0f, 1f);
+            searchRect.pivot = new Vector2(0f, 1f);
+            searchRect.anchoredPosition = new Vector2(24f, -108f);
+            searchRect.sizeDelta = new Vector2(500f, 42f);
+
+            _conflictsButton = CreateButton(_panelObject.transform, "ConflictsOnly", "SHOW: ALL", new Vector2(145f, 42f));
+            RectTransform conflictRect = _conflictsButton.GetComponent<RectTransform>();
+            conflictRect.anchorMin = new Vector2(0f, 1f);
+            conflictRect.anchorMax = new Vector2(0f, 1f);
+            conflictRect.pivot = new Vector2(0f, 1f);
+            conflictRect.anchoredPosition = new Vector2(536f, -108f);
+            _conflictsButton.onClick.AddListener(ToggleConflictsOnly);
+
+            _summaryText = CreateText(_panelObject.transform, "Summary", "", 16, TextAnchor.MiddleLeft);
+            SetRect(_summaryText.rectTransform, new Vector2(700f, -108f), new Vector2(670f, 42f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f));
+
+            CreateHeaderRow();
+            CreateScrollArea();
+
+            _captureText = CreateText(_panelObject.transform, "CaptureText", "", 18, TextAnchor.MiddleCenter);
+            SetRect(_captureText.rectTransform, new Vector2(24f, 62f), new Vector2(1372f, 42f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f));
+            _captureText.color = new Color(1f, 0.85f, 0.35f, 1f);
+
+            _statusText = CreateText(_panelObject.transform, "StatusText", "", 14, TextAnchor.MiddleLeft);
+            SetRect(_statusText.rectTransform, new Vector2(24f, 18f), new Vector2(1372f, 36f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f));
+            _statusText.color = new Color(0.72f, 0.78f, 0.84f, 1f);
+
+            _canvasObject.SetActive(false);
+            _panelVisible = false;
+        }
+
+        private void CreateHeaderRow()
+        {
+            GameObject header = CreateUiObject("HeaderRow", _panelObject.transform);
+            RectTransform r = header.GetComponent<RectTransform>();
+            r.anchorMin = new Vector2(0f, 1f);
+            r.anchorMax = new Vector2(1f, 1f);
+            r.pivot = new Vector2(0.5f, 1f);
+            r.anchoredPosition = new Vector2(0f, -160f);
+            r.sizeDelta = new Vector2(-48f, 34f);
+            Image img = header.AddComponent<Image>();
+            img.color = new Color(0.12f, 0.13f, 0.15f, 1f);
+
+            AddHeaderText(header.transform, "!", 0f, 42f, TextAnchor.MiddleCenter);
+            AddHeaderText(header.transform, "MOD", 42f, 290f, TextAnchor.MiddleLeft);
+            AddHeaderText(header.transform, "ACTION", 332f, 390f, TextAnchor.MiddleLeft);
