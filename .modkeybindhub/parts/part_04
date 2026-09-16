@@ -1,0 +1,197 @@
+                if (button == null)
+                {
+                    continue;
+                }
+
+                string modGuid = ExtractJotunnGuid(fullName);
+                string action = ExtractJotunnAction(fullName);
+                PluginInfo owner = FindPluginInfo(modGuid);
+                string modName = owner != null ? SafeMetadataName(owner) : modGuid;
+
+                Type bt = button.GetType();
+                PropertyInfo configProp = bt.GetProperty("Config", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                PropertyInfo shortcutConfigProp = bt.GetProperty("ShortcutConfig", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                ConfigEntryBase keyConfig = SafeGetProperty(configProp, button) as ConfigEntryBase;
+                ConfigEntryBase shortcutConfig = SafeGetProperty(shortcutConfigProp, button) as ConfigEntryBase;
+
+                if (keyConfig != null)
+                {
+                    if (owner != null) TryAddConfigEntry(owner, keyConfig);
+                    continue;
+                }
+                if (shortcutConfig != null)
+                {
+                    if (owner != null) TryAddConfigEntry(owner, shortcutConfig);
+                    continue;
+                }
+
+                PropertyInfo shortcutProp = bt.GetProperty("Shortcut", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                PropertyInfo keyProp = bt.GetProperty("Key", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                PropertyInfo axisProp = bt.GetProperty("Axis", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                KeyboardShortcut shortcut = KeyboardShortcut.Empty;
+                object shortcutObj = SafeGetProperty(shortcutProp, button);
+                if (shortcutObj is KeyboardShortcut)
+                {
+                    shortcut = (KeyboardShortcut)shortcutObj;
+                }
+
+                KeyCode key = KeyCode.None;
+                object keyObj = SafeGetProperty(keyProp, button);
+                if (keyObj is KeyCode)
+                {
+                    key = (KeyCode)keyObj;
+                }
+
+                string axis = SafeGetProperty(axisProp, button) as string ?? string.Empty;
+
+                if (shortcut.MainKey != KeyCode.None)
+                {
+                    BindingRecord record = new BindingRecord();
+                    record.Kind = BindingKind.JotunnShortcut;
+                    record.ModGuid = modGuid;
+                    record.ModName = string.IsNullOrEmpty(modName) ? "Jötunn mod" : modName;
+                    record.Section = "Jötunn input";
+                    record.ActionName = CleanActionName(action);
+                    record.Description = "Jötunn ButtonConfig detected without a BepInEx config backing entry.";
+                    record.SourceLabel = "JÖTUNN • RUNTIME OVERRIDE";
+                    record.JotunnButton = button;
+                    record.JotunnButtonName = fullName;
+                    record.JotunnShortcutProperty = shortcutProp;
+                    record.JotunnKeyProperty = keyProp;
+                    record.Editable = shortcutProp != null && shortcutProp.CanWrite;
+                    record.Persistent = record.Editable;
+                    record.Id = "JOT|" + fullName + "|shortcut";
+                    record.StrictModifiers = true;
+                    record.MainKey = shortcut.MainKey;
+                    record.Modifiers = new List<KeyCode>(shortcut.Modifiers);
+                    if (_seenIds.Add(record.Id))
+                    {
+                        if (record.Editable) ApplyStoredRuntimeOverride(record);
+                        _bindings.Add(record);
+                    }
+                }
+                else if (key != KeyCode.None)
+                {
+                    BindingRecord record = new BindingRecord();
+                    record.Kind = BindingKind.JotunnKey;
+                    record.ModGuid = modGuid;
+                    record.ModName = string.IsNullOrEmpty(modName) ? "Jötunn mod" : modName;
+                    record.Section = "Jötunn input";
+                    record.ActionName = CleanActionName(action);
+                    record.Description = "Jötunn ButtonConfig detected without a BepInEx config backing entry.";
+                    record.SourceLabel = "JÖTUNN • RUNTIME OVERRIDE";
+                    record.JotunnButton = button;
+                    record.JotunnButtonName = fullName;
+                    record.JotunnShortcutProperty = shortcutProp;
+                    record.JotunnKeyProperty = keyProp;
+                    record.Editable = keyProp != null && keyProp.CanWrite;
+                    record.Persistent = record.Editable;
+                    record.Id = "JOT|" + fullName + "|key";
+                    record.StrictModifiers = false;
+                    record.MainKey = key;
+                    if (_seenIds.Add(record.Id))
+                    {
+                        if (record.Editable) ApplyStoredRuntimeOverride(record);
+                        _bindings.Add(record);
+                    }
+                }
+                else if (!string.IsNullOrEmpty(axis) && axis.IndexOf("Mouse", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    BindingRecord record = new BindingRecord();
+                    record.Kind = BindingKind.ReadOnlyText;
+                    record.ModGuid = modGuid;
+                    record.ModName = string.IsNullOrEmpty(modName) ? "Jötunn mod" : modName;
+                    record.Section = "Jötunn input";
+                    record.ActionName = CleanActionName(action);
+                    record.Description = "Jötunn axis binding detected. Generic key capture does not rewrite axis bindings safely.";
+                    record.SourceLabel = "JÖTUNN AXIS • READ ONLY";
+                    record.DisplayOverride = axis;
+                    record.Editable = false;
+                    record.Persistent = false;
+                    record.Id = "JOT|" + fullName + "|axis";
+                    if (_seenIds.Add(record.Id))
+                    {
+                        _bindings.Add(record);
+                    }
+                }
+            }
+        }
+
+        private void ScanZInputExternalBindings()
+        {
+            object zInput = GetZInputInstance();
+            if (zInput == null)
+            {
+                return;
+            }
+
+            FieldInfo buttonsField = zInput.GetType().GetField("m_buttons", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (buttonsField == null)
+            {
+                return;
+            }
+
+            IDictionary dict = buttonsField.GetValue(zInput) as IDictionary;
+            if (dict == null)
+            {
+                return;
+            }
+
+            foreach (DictionaryEntry item in dict)
+            {
+                string actionName = item.Key as string ?? string.Empty;
+                if (string.IsNullOrEmpty(actionName) || actionName.StartsWith("Joy!", StringComparison.OrdinalIgnoreCase) || actionName.IndexOf('!') >= 0)
+                {
+                    continue;
+                }
+
+                object def = item.Value;
+                if (def == null)
+                {
+                    continue;
+                }
+
+                MethodInfo getPath = def.GetType().GetMethod("GetActionPath", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(bool) }, null);
+                if (getPath == null)
+                {
+                    continue;
+                }
+
+                string path = null;
+                try { path = getPath.Invoke(def, new object[] { true }) as string; } catch { }
+                if (string.IsNullOrEmpty(path))
+                {
+                    continue;
+                }
+
+                KeyCode key;
+                if (!TryInputSystemPathToKeyCode(path, out key))
+                {
+                    continue;
+                }
+
+                ExternalBinding ext = new ExternalBinding();
+                ext.Name = "Valheim/ZInput: " + CleanActionName(actionName);
+                ext.MainKey = key;
+                ext.Modifiers = new List<KeyCode>();
+                ext.StrictModifiers = false;
+                _externalBindings.Add(ext);
+            }
+        }
+
+        private void ScanFileOnlyCandidates()
+        {
+            string configRoot = Paths.ConfigPath;
+            if (string.IsNullOrEmpty(configRoot) || !Directory.Exists(configRoot))
+            {
+                return;
+            }
+
+            HashSet<string> known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < _bindings.Count; i++)
+            {
+                BindingRecord b = _bindings[i];
+                if (b.ConfigEntry == null)
+                {
+                    continue;
