@@ -1,0 +1,47 @@
+name: Build ModKeybindHub DLL
+
+on:
+  push:
+    branches:
+      - build-modkeybindhub
+    paths:
+      - '.github/workflows/build-modkeybindhub.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Reassemble source
+        shell: bash
+        run: |
+          cat .modkeybindhub/source_b64/part_* | base64 -d | gzip -d > .modkeybindhub/ModKeybindHub.cs
+          echo '24695486bdfee9b2fe01c273c8eb79bafe2028645defc7ab869e740c567b2deb  .modkeybindhub/ModKeybindHub.cs' | sha256sum -c -
+
+      - name: Restore
+        run: dotnet restore .modkeybindhub/ModKeybindHub.csproj
+
+      - name: Build
+        run: dotnet build .modkeybindhub/ModKeybindHub.csproj -c Release --no-restore
+
+      - name: Validate DLL
+        shell: bash
+        run: |
+          test -s .modkeybindhub/bin/Release/netstandard2.1/ModKeybindHub.dll
+          file .modkeybindhub/bin/Release/netstandard2.1/ModKeybindHub.dll
+          sha256sum .modkeybindhub/bin/Release/netstandard2.1/ModKeybindHub.dll
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModKeybindHub-DLL
+          path: .modkeybindhub/bin/Release/netstandard2.1/ModKeybindHub.dll
+          if-no-files-found: error
+          retention-days: 1
