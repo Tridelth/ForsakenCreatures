@@ -1,0 +1,221 @@
+                }
+                string path = SafeConfigPath(b.ConfigEntry);
+                if (!string.IsNullOrEmpty(path))
+                {
+                    known.Add(NormalizePath(path) + "|" + b.Section + "|" + RawActionName(b));
+                }
+            }
+
+            string[] files;
+            try
+            {
+                files = Directory.GetFiles(configRoot, "*.cfg", SearchOption.AllDirectories);
+            }
+            catch
+            {
+                return;
+            }
+
+            for (int f = 0; f < files.Length; f++)
+            {
+                string file = files[f];
+                string section = string.Empty;
+                string[] lines;
+                try { lines = File.ReadAllLines(file); } catch { continue; }
+
+                for (int lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+                {
+                    string raw = lines[lineIndex];
+                    string trimmed = raw.Trim();
+                    if (trimmed.Length == 0 || trimmed.StartsWith("#", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    if (trimmed.StartsWith("[", StringComparison.Ordinal) && trimmed.EndsWith("]", StringComparison.Ordinal))
+                    {
+                        section = trimmed.Substring(1, trimmed.Length - 2).Trim();
+                        continue;
+                    }
+
+                    int eq = trimmed.IndexOf('=');
+                    if (eq <= 0)
+                    {
+                        continue;
+                    }
+
+                    string keyName = trimmed.Substring(0, eq).Trim();
+                    string value = trimmed.Substring(eq + 1).Trim();
+                    if (!IsLikelyKeySetting(section, keyName, string.Empty))
+                    {
+                        continue;
+                    }
+
+                    string knownId = NormalizePath(file) + "|" + section + "|" + keyName;
+                    if (known.Contains(knownId))
+                    {
+                        continue;
+                    }
+
+                    KeyCode main;
+                    List<KeyCode> mods;
+                    StringBindingStyle style;
+                    if (!TryParseStringBinding(value, out main, out mods, out style))
+                    {
+                        continue;
+                    }
+
+                    string id = "FILE|" + knownId;
+                    if (!_seenIds.Add(id))
+                    {
+                        continue;
+                    }
+
+                    BindingRecord record = new BindingRecord();
+                    record.Kind = BindingKind.FileOnly;
+                    record.ModGuid = Path.GetFileNameWithoutExtension(file);
+                    record.ModName = FriendlyFileName(file);
+                    record.Section = section;
+                    record.ActionName = CleanActionName(keyName);
+                    record.Description = "Detected in a BepInEx config file, but no live ConfigEntry was found. It is shown for conflict awareness only.";
+                    record.SourceLabel = "CFG FILE ONLY • READ ONLY";
+                    record.Editable = false;
+                    record.Persistent = true;
+                    record.Id = id;
+                    record.MainKey = main;
+                    record.Modifiers = mods;
+                    record.StringStyle = style;
+                    record.StrictModifiers = style == StringBindingStyle.BepInExShortcut;
+                    record.FilePath = file;
+                    _bindings.Add(record);
+                }
+            }
+        }
+
+        private void RefreshAllCurrentValues()
+        {
+            for (int i = 0; i < _bindings.Count; i++)
+            {
+                RefreshCurrentValue(_bindings[i]);
+            }
+        }
+
+        private void RefreshCurrentValue(BindingRecord record)
+        {
+            if (record == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (record.Kind == BindingKind.ConfigShortcut && record.ConfigEntry != null)
+                {
+                    object raw = record.ConfigEntry.BoxedValue;
+                    if (raw is KeyboardShortcut)
+                    {
+                        KeyboardShortcut ks = (KeyboardShortcut)raw;
+                        record.MainKey = ks.MainKey;
+                        record.Modifiers = new List<KeyCode>(ks.Modifiers);
+                    }
+                }
+                else if (record.Kind == BindingKind.ConfigKeyCode && record.ConfigEntry != null)
+                {
+                    object raw = record.ConfigEntry.BoxedValue;
+                    if (raw is KeyCode)
+                    {
+                        record.MainKey = (KeyCode)raw;
+                        record.Modifiers.Clear();
+                    }
+                }
+                else if (record.Kind == BindingKind.ConfigString && record.ConfigEntry != null)
+                {
+                    string value = record.ConfigEntry.BoxedValue as string ?? string.Empty;
+                    KeyCode main;
+                    List<KeyCode> mods;
+                    StringBindingStyle style;
+                    if (TryParseStringBinding(value, out main, out mods, out style))
+                    {
+                        record.MainKey = main;
+                        record.Modifiers = mods;
+                        record.StringStyle = style;
+                        record.StrictModifiers = style == StringBindingStyle.BepInExShortcut;
+                    }
+                }
+                else if (record.Kind == BindingKind.RawShortcutField && record.RawField != null)
+                {
+                    object raw = record.RawField.GetValue(record.RawTarget);
+                    if (raw is KeyboardShortcut)
+                    {
+                        KeyboardShortcut ks = (KeyboardShortcut)raw;
+                        record.MainKey = ks.MainKey;
+                        record.Modifiers = new List<KeyCode>(ks.Modifiers);
+                    }
+                }
+                else if (record.Kind == BindingKind.RawKeyField && record.RawField != null)
+                {
+                    object raw = record.RawField.GetValue(record.RawTarget);
+                    if (raw is KeyCode)
+                    {
+                        record.MainKey = (KeyCode)raw;
+                        record.Modifiers.Clear();
+                    }
+                }
+                else if (record.Kind == BindingKind.JotunnShortcut && record.JotunnButton != null && record.JotunnShortcutProperty != null)
+                {
+                    object raw = record.JotunnShortcutProperty.GetValue(record.JotunnButton, null);
+                    if (raw is KeyboardShortcut)
+                    {
+                        KeyboardShortcut ks = (KeyboardShortcut)raw;
+                        record.MainKey = ks.MainKey;
+                        record.Modifiers = new List<KeyCode>(ks.Modifiers);
+                    }
+                }
+                else if (record.Kind == BindingKind.JotunnKey && record.JotunnButton != null && record.JotunnKeyProperty != null)
+                {
+                    object raw = record.JotunnKeyProperty.GetValue(record.JotunnButton, null);
+                    if (raw is KeyCode)
+                    {
+                        record.MainKey = (KeyCode)raw;
+                        record.Modifiers.Clear();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLog("Could not refresh " + record.Id + ": " + ex.Message);
+            }
+        }
+
+        private void CalculateConflicts()
+        {
+            for (int i = 0; i < _bindings.Count; i++)
+            {
+                _bindings[i].Conflict = ConflictLevel.None;
+                _bindings[i].ConflictWith.Clear();
+            }
+
+            for (int i = 0; i < _bindings.Count; i++)
+            {
+                BindingRecord a = _bindings[i];
+                if (a.MainKey == KeyCode.None)
+                {
+                    continue;
+                }
+
+                for (int j = i + 1; j < _bindings.Count; j++)
+                {
+                    BindingRecord b = _bindings[j];
+                    if (b.MainKey == KeyCode.None)
+                    {
+                        continue;
+                    }
+                    ConflictLevel level = CompareBindings(a.MainKey, a.Modifiers, a.StrictModifiers, b.MainKey, b.Modifiers, b.StrictModifiers);
+                    if (level != ConflictLevel.None)
+                    {
+                        ApplyConflict(a, level, b.ModName + ": " + b.ActionName);
+                        ApplyConflict(b, level, a.ModName + ": " + a.ActionName);
+                    }
+                }
+
+                for (int e = 0; e < _externalBindings.Count; e++)
+                {
