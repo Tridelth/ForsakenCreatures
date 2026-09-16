@@ -1,0 +1,227 @@
+            AddHeaderText(header.transform, "KEY / SHORTCUT", 722f, 235f, TextAnchor.MiddleLeft);
+            AddHeaderText(header.transform, "SOURCE / STATUS", 957f, 390f, TextAnchor.MiddleLeft);
+        }
+
+        private void AddHeaderText(Transform parent, string text, float x, float width, TextAnchor anchor)
+        {
+            Text t = CreateText(parent, "H_" + text, text, 13, anchor);
+            t.fontStyle = FontStyle.Bold;
+            SetRect(t.rectTransform, new Vector2(x + 6f, 0f), new Vector2(width - 12f, 34f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f));
+        }
+
+        private void CreateScrollArea()
+        {
+            GameObject scrollObj = CreateUiObject("Scroll", _panelObject.transform);
+            RectTransform scrollRectTransform = scrollObj.GetComponent<RectTransform>();
+            scrollRectTransform.anchorMin = new Vector2(0f, 0f);
+            scrollRectTransform.anchorMax = new Vector2(1f, 1f);
+            scrollRectTransform.offsetMin = new Vector2(24f, 112f);
+            scrollRectTransform.offsetMax = new Vector2(-24f, -198f);
+            Image scrollBg = scrollObj.AddComponent<Image>();
+            scrollBg.color = new Color(0.035f, 0.04f, 0.05f, 0.92f);
+            ScrollRect scroll = scrollObj.AddComponent<ScrollRect>();
+            scroll.horizontal = false;
+            scroll.vertical = true;
+            scroll.scrollSensitivity = 38f;
+
+            GameObject viewport = CreateUiObject("Viewport", scrollObj.transform);
+            RectTransform viewRect = viewport.GetComponent<RectTransform>();
+            Stretch(viewRect, 4f, 4f, 18f, 4f);
+            Image viewportImage = viewport.AddComponent<Image>();
+            viewportImage.color = new Color(1f, 1f, 1f, 0.001f);
+            Mask mask = viewport.AddComponent<Mask>();
+            mask.showMaskGraphic = false;
+
+            GameObject content = CreateUiObject("Content", viewport.transform);
+            _rowsContent = content.GetComponent<RectTransform>();
+            _rowsContent.anchorMin = new Vector2(0f, 1f);
+            _rowsContent.anchorMax = new Vector2(1f, 1f);
+            _rowsContent.pivot = new Vector2(0.5f, 1f);
+            _rowsContent.anchoredPosition = Vector2.zero;
+            _rowsContent.sizeDelta = Vector2.zero;
+
+            VerticalLayoutGroup layout = content.AddComponent<VerticalLayoutGroup>();
+            layout.childControlHeight = true;
+            layout.childControlWidth = true;
+            layout.childForceExpandHeight = false;
+            layout.childForceExpandWidth = true;
+            layout.spacing = 2f;
+            layout.padding = new RectOffset(2, 2, 2, 2);
+
+            ContentSizeFitter fitter = content.AddComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+
+            scroll.viewport = viewRect;
+            scroll.content = _rowsContent;
+
+            GameObject scrollbarObj = CreateUiObject("Scrollbar", scrollObj.transform);
+            RectTransform sbRect = scrollbarObj.GetComponent<RectTransform>();
+            sbRect.anchorMin = new Vector2(1f, 0f);
+            sbRect.anchorMax = new Vector2(1f, 1f);
+            sbRect.pivot = new Vector2(1f, 1f);
+            sbRect.offsetMin = new Vector2(-14f, 4f);
+            sbRect.offsetMax = new Vector2(-4f, -4f);
+            Image sbBg = scrollbarObj.AddComponent<Image>();
+            sbBg.color = new Color(0.12f, 0.12f, 0.13f, 1f);
+            Scrollbar scrollbar = scrollbarObj.AddComponent<Scrollbar>();
+            scrollbar.direction = Scrollbar.Direction.BottomToTop;
+
+            GameObject sliding = CreateUiObject("SlidingArea", scrollbarObj.transform);
+            RectTransform slidingRect = sliding.GetComponent<RectTransform>();
+            Stretch(slidingRect, 2f, 2f, 2f, 2f);
+            GameObject handle = CreateUiObject("Handle", sliding.transform);
+            RectTransform handleRect = handle.GetComponent<RectTransform>();
+            Stretch(handleRect, 0f, 0f, 0f, 0f);
+            Image handleImage = handle.AddComponent<Image>();
+            handleImage.color = new Color(0.48f, 0.52f, 0.58f, 0.95f);
+            scrollbar.handleRect = handleRect;
+            scrollbar.targetGraphic = handleImage;
+            scroll.verticalScrollbar = scrollbar;
+            scroll.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.AutoHideAndExpandViewport;
+            scroll.verticalScrollbarSpacing = -3f;
+        }
+
+        private void ToggleConflictsOnly()
+        {
+            _conflictsOnly = !_conflictsOnly;
+            SetButtonText(_conflictsButton, _conflictsOnly ? "SHOW: CONFLICTS" : "SHOW: ALL");
+            RebuildRows();
+        }
+
+        private void TogglePanel()
+        {
+            if (_panelVisible)
+            {
+                ClosePanel();
+            }
+            else
+            {
+                OpenPanel();
+            }
+        }
+
+        private void OpenPanel()
+        {
+            _panelVisible = true;
+            _canvasObject.SetActive(true);
+            _captureTarget = null;
+            _captureText.text = string.Empty;
+            _statusText.text = "Scanning loaded mods...";
+            Cursor.visible = true;
+            Cursor.lockState = CursorLockMode.None;
+            ScanAllBindings(false);
+        }
+
+        private void ClosePanel()
+        {
+            _captureTarget = null;
+            _panelVisible = false;
+            if (_canvasObject != null)
+            {
+                _canvasObject.SetActive(false);
+            }
+        }
+
+        private void ScanAllBindings(bool userRequested)
+        {
+            _bindings.Clear();
+            _externalBindings.Clear();
+            _seenConfigEntries.Clear();
+            _seenIds.Clear();
+
+            int pluginCount = 0;
+            try
+            {
+                foreach (KeyValuePair<string, PluginInfo> kv in Chainloader.PluginInfos)
+                {
+                    PluginInfo info = kv.Value;
+                    if (info == null || info.Instance == null)
+                    {
+                        continue;
+                    }
+
+                    pluginCount++;
+                    ScanPlugin(info);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("Mod Keybind Hub: plugin scan encountered an error: " + ex.Message);
+            }
+
+            try
+            {
+                ScanJotunnButtons();
+            }
+            catch (Exception ex)
+            {
+                DebugLog("Jotunn scan failed safely: " + ex);
+            }
+
+            if (_scanFileOnlyCandidates.Value)
+            {
+                try
+                {
+                    ScanFileOnlyCandidates();
+                }
+                catch (Exception ex)
+                {
+                    DebugLog("File-only scan failed safely: " + ex);
+                }
+            }
+
+            if (_showVanillaCollisions.Value)
+            {
+                try
+                {
+                    ScanZInputExternalBindings();
+                }
+                catch (Exception ex)
+                {
+                    DebugLog("ZInput external collision scan failed safely: " + ex);
+                }
+            }
+
+            RefreshAllCurrentValues();
+            CalculateConflicts();
+            SortBindings();
+            RebuildRows();
+
+            int editable = 0;
+            int exact = 0;
+            int possible = 0;
+            for (int i = 0; i < _bindings.Count; i++)
+            {
+                if (_bindings[i].Editable) editable++;
+                if (_bindings[i].Conflict == ConflictLevel.Exact) exact++;
+                else if (_bindings[i].Conflict == ConflictLevel.Possible) possible++;
+            }
+
+            _summaryText.text = _bindings.Count + " binds • " + editable + " editable • " + exact + " exact conflicts • " + possible + " possible";
+            _statusText.text = "Scanned " + pluginCount + " loaded BepInEx plugins. Config-backed changes save immediately; raw/Jötunn runtime overrides are also persisted by this hub.";
+
+            if (userRequested)
+            {
+                Logger.LogInfo("Mod Keybind Hub rescan: " + _bindings.Count + " binds, " + exact + " exact conflicts, " + possible + " possible overlaps.");
+            }
+        }
+
+        private void ScanPlugin(PluginInfo info)
+        {
+            string modGuid = SafeMetadataGuid(info);
+            string modName = SafeMetadataName(info);
+
+            try
+            {
+                ConfigFile config = info.Instance.Config;
+                if (config != null)
+                {
+                    foreach (ConfigEntryBase entry in config.Values)
+                    {
+                        TryAddConfigEntry(info, entry);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
