@@ -1,0 +1,220 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using BepInEx;
+using BepInEx.Bootstrap;
+using BepInEx.Configuration;
+using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
+
+namespace ModKeybindHub
+{
+    [BepInPlugin("local.modkeybindhub", "Mod Keybind Hub", "1.0.0")]
+    public sealed class ModKeybindHubPlugin : BaseUnityPlugin
+    {
+        private const string PluginGuid = "local.modkeybindhub";
+        private const string PluginVersion = "1.0.0";
+
+        private ConfigEntry<KeyboardShortcut> _fallbackOpenKey;
+        private ConfigEntry<bool> _scanStringCandidates;
+        private ConfigEntry<bool> _scanRawFields;
+        private ConfigEntry<bool> _scanFileOnlyCandidates;
+        private ConfigEntry<bool> _showVanillaCollisions;
+        private ConfigEntry<bool> _debugLogging;
+
+        private readonly List<BindingRecord> _bindings = new List<BindingRecord>();
+        private readonly List<ExternalBinding> _externalBindings = new List<ExternalBinding>();
+        private readonly HashSet<ConfigEntryBase> _seenConfigEntries = new HashSet<ConfigEntryBase>();
+        private readonly HashSet<string> _seenIds = new HashSet<string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, ConfigEntry<string>> _runtimeOverrideEntries = new Dictionary<string, ConfigEntry<string>>(StringComparer.Ordinal);
+        private readonly List<KeyCode> _captureKeys = new List<KeyCode>();
+
+        // BepInEx 5.4+/6 expose UnityInput as a compatibility layer over Unity legacy/new input.
+        // Resolve it by reflection so this plugin still compiles on older BepInEx builds that do not expose it.
+        private object _inputSystem;
+        private MethodInfo _inputGetKeyDown;
+        private MethodInfo _inputGetKey;
+        private PropertyInfo _inputSupportedKeyCodes;
+
+        private Font _font;
+        private GameObject _canvasObject;
+        private Canvas _canvas;
+        private GameObject _panelObject;
+        private RectTransform _panelRect;
+        private RectTransform _rowsContent;
+        private InputField _searchField;
+        private Text _summaryText;
+        private Text _captureText;
+        private Text _statusText;
+        private Button _conflictsButton;
+        private bool _conflictsOnly;
+        private bool _panelVisible;
+        private BindingRecord _captureTarget;
+        private float _captureIgnoreUntil;
+
+        private GameObject _launcherObject;
+        private UnityEngine.Object _lastKeyboardMouseSettings;
+        private Type _keyboardMouseSettingsType;
+        private float _nextUiProbeTime;
+        private float _nextOpenKeyAllowedTime;
+
+        private string _lastSearch = string.Empty;
+
+        private void Awake()
+        {
+            _fallbackOpenKey = Config.Bind<KeyboardShortcut>("General", "FallbackOpenKey", new KeyboardShortcut(KeyCode.F8),
+                "Fallback shortcut for opening Mod Keybind Hub if the Settings-page button cannot be reached. Set to None to disable.");
+            _scanStringCandidates = Config.Bind<bool>("Detection", "ScanStringKeybinds", true,
+                "Detect strongly keybind-looking string settings such as HotKey = v. These are only editable when the format is understood safely.");
+            _scanRawFields = Config.Bind<bool>("Detection", "ScanRawKeyFields", true,
+                "Detect writable static/plugin KeyCode and KeyboardShortcut fields used by mods that did not expose a BepInEx config entry.");
+            _scanFileOnlyCandidates = Config.Bind<bool>("Detection", "ShowFileOnlyCandidates", true,
+                "Show keybind-looking entries found only in BepInEx .cfg files. They are reported as read-only because changing them may require a restart or a mod-specific reload.");
+            _showVanillaCollisions = Config.Bind<bool>("Detection", "ShowVanillaCollisions", true,
+                "Check detected mod binds against currently registered Valheim keyboard/mouse ZInput actions when available.");
+            _debugLogging = Config.Bind<bool>("General", "DebugLogging", false,
+                "Write verbose Mod Keybind Hub detection information to the BepInEx log.");
+
+            InitializeInputAdapter();
+            BuildCaptureKeyList();
+            BuildOverlayUi();
+
+            Logger.LogInfo("Mod Keybind Hub " + PluginVersion + " loaded. It will add MOD KEYBINDS to Keyboard & Mouse settings. Fallback opener: " + _fallbackOpenKey.Value + ".");
+        }
+
+        private void OnDestroy()
+        {
+            if (_canvasObject != null)
+            {
+                Destroy(_canvasObject);
+            }
+        }
+
+        private void Update()
+        {
+            HandleCapture();
+
+            if (_captureTarget == null && Time.unscaledTime >= _nextOpenKeyAllowedTime)
+            {
+                KeyboardShortcut openKey = _fallbackOpenKey.Value;
+                if (openKey.MainKey != KeyCode.None && openKey.IsDown())
+                {
+                    _nextOpenKeyAllowedTime = Time.unscaledTime + 0.35f;
+                    TogglePanel();
+                }
+            }
+
+            if (Time.unscaledTime >= _nextUiProbeTime)
+            {
+                _nextUiProbeTime = Time.unscaledTime + 1.0f;
+                TryInstallSettingsLauncher();
+            }
+
+            if (_panelVisible && _searchField != null)
+            {
+                string current = _searchField.text ?? string.Empty;
+                if (!string.Equals(current, _lastSearch, StringComparison.Ordinal))
+                {
+                    _lastSearch = current;
+                    RebuildRows();
+                }
+            }
+        }
+
+        private void InitializeInputAdapter()
+        {
+            _inputSystem = null;
+            _inputGetKeyDown = null;
+            _inputGetKey = null;
+            _inputSupportedKeyCodes = null;
+
+            try
+            {
+                Type unityInputType = typeof(BaseUnityPlugin).Assembly.GetType("BepInEx.UnityInput", false);
+                if (unityInputType == null)
+                {
+                    return;
+                }
+
+                PropertyInfo currentProperty = unityInputType.GetProperty("Current", BindingFlags.Public | BindingFlags.Static);
+                if (currentProperty == null)
+                {
+                    return;
+                }
+
+                _inputSystem = currentProperty.GetValue(null, null);
+                if (_inputSystem == null)
+                {
+                    return;
+                }
+
+                Type inputType = _inputSystem.GetType();
+                _inputGetKeyDown = inputType.GetMethod("GetKeyDown", BindingFlags.Public | BindingFlags.Instance, null, new Type[] { typeof(KeyCode) }, null);
+                _inputGetKey = inputType.GetMethod("GetKey", BindingFlags.Public | BindingFlags.Instance, null, new Type[] { typeof(KeyCode) }, null);
+                _inputSupportedKeyCodes = inputType.GetProperty("SupportedKeyCodes", BindingFlags.Public | BindingFlags.Instance);
+
+                if (_debugLogging != null && _debugLogging.Value)
+                {
+                    Logger.LogInfo("Input capture adapter: " + inputType.FullName);
+                }
+            }
+            catch (Exception ex)
+            {
+                _inputSystem = null;
+                _inputGetKeyDown = null;
+                _inputGetKey = null;
+                _inputSupportedKeyCodes = null;
+                DebugLog("BepInEx UnityInput adapter unavailable; falling back to UnityEngine.Input. " + ex.Message);
+            }
+        }
+
+        private bool InputKeyDown(KeyCode key)
+        {
+            if (_inputSystem != null && _inputGetKeyDown != null)
+            {
+                try
+                {
+                    object value = _inputGetKeyDown.Invoke(_inputSystem, new object[] { key });
+                    if (value is bool)
+                    {
+                        return (bool)value;
+                    }
+                }
+                catch
+                {
+                    // Fall through to legacy input.
+                }
+            }
+
+            try { return Input.GetKeyDown(key); } catch { return false; }
+        }
+
+        private bool InputKeyHeld(KeyCode key)
+        {
+            if (_inputSystem != null && _inputGetKey != null)
+            {
+                try
+                {
+                    object value = _inputGetKey.Invoke(_inputSystem, new object[] { key });
+                    if (value is bool)
+                    {
+                        return (bool)value;
+                    }
+                }
+                catch
+                {
+                    // Fall through to legacy input.
+                }
+            }
+
+            try { return Input.GetKey(key); } catch { return false; }
+        }
+
+        private void BuildCaptureKeyList()
+        {
+            _captureKeys.Clear();
+
