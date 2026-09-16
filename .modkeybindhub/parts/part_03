@@ -1,0 +1,242 @@
+                DebugLog("Default config scan failed for " + modName + ": " + ex.Message);
+            }
+
+            if (!_scanRawFields.Value)
+            {
+                return;
+            }
+
+            Assembly assembly = null;
+            try
+            {
+                assembly = info.Instance.GetType().Assembly;
+            }
+            catch
+            {
+                return;
+            }
+
+            Type[] types = SafeGetTypes(assembly);
+            for (int i = 0; i < types.Length; i++)
+            {
+                Type type = types[i];
+                if (type == null)
+                {
+                    continue;
+                }
+
+                BindingFlags staticFlags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+                FieldInfo[] staticFields = SafeGetFields(type, staticFlags);
+                for (int f = 0; f < staticFields.Length; f++)
+                {
+                    FieldInfo field = staticFields[f];
+                    if (typeof(ConfigEntryBase).IsAssignableFrom(field.FieldType))
+                    {
+                        TryAddConfigField(info, field, null);
+                    }
+                    else
+                    {
+                        TryAddRawField(info, field, null);
+                    }
+                }
+            }
+
+            Type current = info.Instance.GetType();
+            while (current != null && current != typeof(BaseUnityPlugin) && current != typeof(MonoBehaviour))
+            {
+                FieldInfo[] instanceFields = SafeGetFields(current, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                for (int f = 0; f < instanceFields.Length; f++)
+                {
+                    FieldInfo field = instanceFields[f];
+                    if (typeof(ConfigEntryBase).IsAssignableFrom(field.FieldType))
+                    {
+                        TryAddConfigField(info, field, info.Instance);
+                    }
+                    else
+                    {
+                        TryAddRawField(info, field, info.Instance);
+                    }
+                }
+                current = current.BaseType;
+            }
+        }
+
+        private void TryAddConfigField(PluginInfo info, FieldInfo field, object target)
+        {
+            try
+            {
+                ConfigEntryBase entry = field.GetValue(target) as ConfigEntryBase;
+                if (entry != null)
+                {
+                    TryAddConfigEntry(info, entry);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void TryAddConfigEntry(PluginInfo info, ConfigEntryBase entry)
+        {
+            if (entry == null || _seenConfigEntries.Contains(entry))
+            {
+                return;
+            }
+
+            _seenConfigEntries.Add(entry);
+
+            string section = entry.Definition != null ? entry.Definition.Section : string.Empty;
+            string key = entry.Definition != null ? entry.Definition.Key : "Keybind";
+
+            if (SafeMetadataGuid(info) == PluginGuid && string.Equals(section, "Runtime Overrides", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            BindingKind kind;
+            StringBindingStyle stringStyle = StringBindingStyle.Unknown;
+            KeyCode main = KeyCode.None;
+            List<KeyCode> modifiers = new List<KeyCode>();
+
+            if (entry.SettingType == typeof(KeyboardShortcut))
+            {
+                kind = BindingKind.ConfigShortcut;
+            }
+            else if (entry.SettingType == typeof(KeyCode))
+            {
+                kind = BindingKind.ConfigKeyCode;
+            }
+            else if (entry.SettingType == typeof(string) && _scanStringCandidates.Value && IsLikelyKeySetting(section, key, SafeDescription(entry)))
+            {
+                string value = string.Empty;
+                try { value = entry.BoxedValue as string ?? string.Empty; } catch { }
+                if (!TryParseStringBinding(value, out main, out modifiers, out stringStyle))
+                {
+                    return;
+                }
+                kind = BindingKind.ConfigString;
+            }
+            else
+            {
+                return;
+            }
+
+            BindingRecord record = new BindingRecord();
+            record.Kind = kind;
+            record.ModGuid = SafeMetadataGuid(info);
+            record.ModName = SafeMetadataName(info);
+            record.Section = section;
+            record.ActionName = CleanActionName(key);
+            record.Description = SafeDescription(entry);
+            record.SourceLabel = kind == BindingKind.ConfigShortcut ? "BEPINEX SHORTCUT" : (kind == BindingKind.ConfigKeyCode ? "BEPINEX KEY" : "BEPINEX STRING");
+            record.ConfigEntry = entry;
+            record.Editable = true;
+            record.Persistent = true;
+            record.StringStyle = stringStyle;
+            record.Id = "CFG|" + SafeConfigPath(entry) + "|" + section + "|" + key;
+            record.StrictModifiers = kind == BindingKind.ConfigShortcut || (kind == BindingKind.ConfigString && stringStyle == StringBindingStyle.BepInExShortcut);
+
+            if (_seenIds.Add(record.Id))
+            {
+                _bindings.Add(record);
+                DebugLog("Detected config keybind: " + record.ModName + " / " + record.ActionName + " (" + record.SourceLabel + ")");
+            }
+        }
+
+        private void TryAddRawField(PluginInfo info, FieldInfo field, object target)
+        {
+            if (field == null || !IsLikelyRawFieldName(field.Name))
+            {
+                return;
+            }
+
+            BindingKind kind;
+            if (field.FieldType == typeof(KeyboardShortcut))
+            {
+                kind = BindingKind.RawShortcutField;
+            }
+            else if (field.FieldType == typeof(KeyCode))
+            {
+                kind = BindingKind.RawKeyField;
+            }
+            else
+            {
+                return;
+            }
+
+            string targetKind = field.IsStatic ? "static" : "instance";
+            string id = "RAW|" + SafeMetadataGuid(info) + "|" + field.DeclaringType.FullName + "|" + targetKind + "|" + field.Name;
+            if (!_seenIds.Add(id))
+            {
+                return;
+            }
+
+            object value;
+            try
+            {
+                value = field.GetValue(target);
+            }
+            catch
+            {
+                return;
+            }
+
+            BindingRecord record = new BindingRecord();
+            record.Kind = kind;
+            record.ModGuid = SafeMetadataGuid(info);
+            record.ModName = SafeMetadataName(info);
+            record.Section = "Runtime field";
+            record.ActionName = CleanActionName(field.Name);
+            record.Description = "Detected directly from a mod field because no matching BepInEx config entry was exposed.";
+            record.SourceLabel = field.IsInitOnly || field.IsLiteral ? "RAW FIELD • READ ONLY" : "RAW FIELD • RUNTIME OVERRIDE";
+            record.RawField = field;
+            record.RawTarget = target;
+            record.Editable = !(field.IsInitOnly || field.IsLiteral);
+            record.Persistent = record.Editable;
+            record.Id = id;
+            record.StrictModifiers = kind == BindingKind.RawShortcutField;
+
+            if (kind == BindingKind.RawShortcutField && value is KeyboardShortcut)
+            {
+                KeyboardShortcut ks = (KeyboardShortcut)value;
+                record.MainKey = ks.MainKey;
+                record.Modifiers = new List<KeyCode>(ks.Modifiers);
+            }
+            else if (kind == BindingKind.RawKeyField && value is KeyCode)
+            {
+                record.MainKey = (KeyCode)value;
+            }
+
+            if (record.Editable)
+            {
+                ApplyStoredRuntimeOverride(record);
+            }
+
+            _bindings.Add(record);
+            DebugLog("Detected raw key field: " + record.ModName + " / " + record.ActionName);
+        }
+
+        private void ScanJotunnButtons()
+        {
+            Type inputManagerType = FindType("Jotunn.Managers.InputManager");
+            if (inputManagerType == null)
+            {
+                return;
+            }
+
+            FieldInfo buttonsField = inputManagerType.GetField("Buttons", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+            if (buttonsField == null)
+            {
+                return;
+            }
+
+            IDictionary buttons = buttonsField.GetValue(null) as IDictionary;
+            if (buttons == null)
+            {
+                return;
+            }
+
+            foreach (DictionaryEntry item in buttons)
+            {
+                string fullName = item.Key as string ?? string.Empty;
+                object button = item.Value;
