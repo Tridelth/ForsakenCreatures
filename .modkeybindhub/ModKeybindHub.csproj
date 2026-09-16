@@ -14,5 +14,6 @@
   <ItemGroup>
     <PackageReference Include="BepInEx.Core" Version="5.4.21" PrivateAssets="all" />
     <PackageReference Include="UnityEngine.Modules" Version="2021.3.33" PrivateAssets="all" />
+    <PackageReference Include="Unity3D.UnityEngine.UI" Version="2018.3.5.1" PrivateAssets="all" />
   </ItemGroup>
 </Project>
