@@ -24,6 +24,7 @@ jobs:
         run: |
           cat .modkeybindhub/source_b64/part_* | base64 -d | gzip -d > .modkeybindhub/ModKeybindHub.cs
           echo '24695486bdfee9b2fe01c273c8eb79bafe2028645defc7ab869e740c567b2deb  .modkeybindhub/ModKeybindHub.cs' | sha256sum -c -
+          python3 -c "p='.modkeybindhub/ModKeybindHub.cs'; s=open(p).read(); s=s.replace('foreach (ConfigEntryBase entry in config.Values)', 'foreach (ConfigEntryBase entry in config.GetConfigEntries())'); open(p,'w').write(s)"
 
       - name: Restore
         run: dotnet restore .modkeybindhub/ModKeybindHub.csproj --source https://nuget.bepinex.dev/v3/index.json --source https://api.nuget.org/v3/index.json
@@ -46,4 +47,4 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-# build revision 3: include Unity uGUI compile references
+# build revision 4
