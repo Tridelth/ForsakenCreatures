@@ -45,3 +45,5 @@ jobs:
           path: .modkeybindhub/bin/Release/netstandard2.1/ModKeybindHub.dll
           if-no-files-found: error
           retention-days: 1
+
+# build revision 3: include Unity uGUI compile references
